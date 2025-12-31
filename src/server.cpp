@@ -6,8 +6,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 #include <stdlib.h>
 #include <poll.h>
+#include <fcntl.h>
+#include <errno.h>
 #include "conn.hpp"
 #include "xslog.hpp"
 
@@ -19,8 +22,8 @@ static void handle_write(conn* c) {
     return;
 }
 
-void populate_poll_args(vector<conn*>& fd_to_conn, vector<struct pollfd>& poll_args) {
-    for(conn c: fd_to_conn) { 
+static void populate_poll_args(std::vector<conn*> fd_to_conn, std::vector<struct pollfd> poll_args) {
+    for(conn* c: fd_to_conn) { 
         if(!c) {
             continue;
         }
@@ -54,14 +57,14 @@ static void write_message(int conn_fd, const char* message) {
 }
 
 static void set_nonblocking(int fd) {
-    int errno = 0;
+    errno = 0;
     int ops = fcntl(fd, F_GETFL, 0) | O_NONBLOCK;
     if(errno) {
         xslog::error("fcntl() couldn't get flags");
         return;
     }
     fcntl(fd, F_SETFL, ops);
-    if(errorno) {
+    if(errno) {
         xslog::error("fcntl() couldn't set flags");
         return;
     }
@@ -70,8 +73,8 @@ static void set_nonblocking(int fd) {
 
 static conn* accept_connection(int fd) {
     struct sockaddr_in addr;
-    struct socklen_t addr_len = sizeof(client_addr);
-    int conn_fd = accept(fd, &addr, &addr_len);
+    socklen_t addr_len = sizeof(addr);
+    int conn_fd = accept(fd, (sockaddr*)&addr, &addr_len);
     if(conn_fd < 0) {
         return nullptr;
     }
@@ -110,14 +113,14 @@ int main() {
         abort();
     }
 
-    vector<conn*> fd_to_conn;
+    std::vector<conn*> fd_to_conn;
     // Input for poll()
-    vector<struct pollfd> poll_args;
+    std::vector<struct pollfd> poll_args;
 
     // Event loop
     while(true) {
         // Preparing input for poll()
-        poll_args.clear()
+        poll_args.clear();
         struct pollfd p = {server_sock_fd, POLLIN, 0};
         poll_args.push_back(p);
 
@@ -132,7 +135,7 @@ int main() {
             continue;
         }
         if(rv < 0) {
-            xslog::error('poll()');
+            xslog::error("poll()");
             abort();
         }
 
@@ -142,29 +145,29 @@ int main() {
                 if(fd_to_conn.size() <= (size_t)c->fd) {
                     fd_to_conn.resize(c->fd + 1);
                 }
-            }
-            assert(!fd_to_conn[c->fd]);
-            fd_to_conn[c->fd] = c;
+                fd_to_conn[c->fd] = c;
+            }            
         }
 
         // Handle connections that want to read/write
         for(int i = 1; i < poll_args.size(); i++) {
             uint32_t revents = poll_args[i].revents;
+            conn* c = fd_to_conn[poll_args[i].fd];
             if(revents & POLLIN) {
-                handle_read(conn);
+                handle_read(c);
             }   
             if(revents & POLLOUT) {
-                handle_write(conn);
+                handle_write(c);
             }
         }
 
         for(int i = 1; i < poll_args.size(); i++) {
             uint32_t revents = poll_args[i].revents;
-            conn* c = fd_to_conn(poll_args[i].fd);
+            conn* c = fd_to_conn[poll_args[i].fd];
             if(revents & POLLERR || c->fd) {
                 close(c->fd);
                 fd_to_conn[c->fd] = nullptr;
-                delete conn;
+                delete c;
             }
         }
 
