@@ -10,6 +10,6 @@ struct conn {
     bool want_close = false;
     std::vector<uint8_t> incoming;
     std::vector<uint8_t> outgoing;
-}
+};
 
 #endif // CONN_H

@@ -14,13 +14,53 @@
 #include "conn.hpp"
 #include "xslog.hpp"
 
+int max_message_len = 1024;
+
+static void append_buffer(uint8_t* from, uint8_t* to, int n) {
+    memcpy(to, from, (size_t)n);
+}
+
+static bool try_one_request(conn* c) {
+    if(c->incoming.size() < 4) {
+        return false;
+    }
+    uint32_t len = 0;
+    memcpy(&len, c->incoming.data(), sizeof(len));
+    if(len > max_message_len) {
+        c->want_close = true;
+        xslog::error("message length too long");
+        return false;
+    }
+    const uint8_t* request = &c->incoming[4];
+    xslog::info((char*)request);
+}
+
 static void handle_read(conn* c) {
-    return;
+    uint8_t buffer[64*1024];
+    int n = read(c->fd, buffer, sizeof(buffer));
+    if(n < 0) {
+        xslog::error("read error");
+        return;
+    }
+    if(n == 0) {
+        c->want_close = true;
+        return;
+    }
+    append_buffer(c->incoming.data(), buffer, n);
+
+    while(true) {
+        if(try_one_request(c)){
+            break;
+        };
+    }
+
+
 }
 
 static void handle_write(conn* c) {
-    return;
-}
+}   
+
+
 
 static void populate_poll_args(std::vector<conn*> fd_to_conn, std::vector<struct pollfd> poll_args) {
     for(conn* c: fd_to_conn) { 
@@ -35,24 +75,6 @@ static void populate_poll_args(std::vector<conn*> fd_to_conn, std::vector<struct
             p.events |= POLLOUT;
         }
         poll_args.push_back(p);
-    }
-}
-
-static void read_message(int conn_fd) {
-    char buffer[64];
-    ssize_t n = read(conn_fd, buffer, sizeof(buffer) - 1);
-    if (n < 0) {
-        xslog::error("read()");
-        return;
-    }
-    xslog::info(buffer);
-}
-
-static void write_message(int conn_fd, const char* message) {
-    ssize_t n = write(conn_fd, message, strlen(message));
-    if(n < 0) {
-        xslog::error("write()");
-        return;
     }
 }
 
@@ -113,11 +135,13 @@ int main() {
         abort();
     }
 
+    // We use conn because pollfd doesn't have field to store data
     std::vector<conn*> fd_to_conn;
     // Input for poll()
     std::vector<struct pollfd> poll_args;
 
     // Event loop
+    
     while(true) {
         // Preparing input for poll()
         poll_args.clear();
@@ -125,7 +149,7 @@ int main() {
         poll_args.push_back(p);
 
         // From the fd_to_conn vector get whatever wants to read and write, intially it will be empty
-        // so the only argument that goes into poll() is the the server_socket_fd that wants to read
+        // so the only argument that goes into poll() is the the server_sock_fd that wants to read
         populate_poll_args(fd_to_conn, poll_args);
 
         // Call poll()
@@ -139,7 +163,7 @@ int main() {
             abort();
         }
 
-        // Handle the listening socket
+        // Accept connetions on the listening socket
         if(poll_args[0].revents) {
             if(conn* c = accept_connection(server_sock_fd)) {
                 if(fd_to_conn.size() <= (size_t)c->fd) {
@@ -149,29 +173,24 @@ int main() {
             }            
         }
 
-        // Handle connections that want to read/write
-        for(int i = 1; i < poll_args.size(); i++) {
-            uint32_t revents = poll_args[i].revents;
+        // Handle connection sockets that want to read/write/cloes
+        for(size_t i = 1; i < poll_args.size(); i++) {
+            if(poll_args[i].revents == 0) {
+                continue;
+            }
             conn* c = fd_to_conn[poll_args[i].fd];
-            if(revents & POLLIN) {
+            if(poll_args[i].revents & POLLIN) {
                 handle_read(c);
             }   
-            if(revents & POLLOUT) {
+            if(poll_args[i].revents & POLLOUT) {
                 handle_write(c);
             }
-        }
-
-        for(int i = 1; i < poll_args.size(); i++) {
-            uint32_t revents = poll_args[i].revents;
-            conn* c = fd_to_conn[poll_args[i].fd];
-            if(revents & POLLERR || c->fd) {
+            if(poll_args[i].revents & POLLERR || c->want_close) {
                 close(c->fd);
                 fd_to_conn[c->fd] = nullptr;
                 delete c;
             }
         }
-
     }
-
     return 0;
 }
